@@ -7,6 +7,7 @@
 
 const float pumpStartTemp = 58.0;
 const float pumpStopTemp = 52.0;
+const float fillWithWoodTemp = 55.0;
 const float frostProtStartTemp = 4.0;
 const float frostProtStopTemp = 4.5;
 const float overHeatAlarmTemp = 70.0;
@@ -42,7 +43,13 @@ bool pumpRunning = false;
 bool frostProtectionON = false;
 bool overHeatAlarmOn = false;
 bool noAcAlarmOn = false;
+bool woodFillAlarmActivated = false;
 int alarmStartCtr = 0;
+
+float oneMinArray[60];
+float fiveMinArray[300];
+float deltaOneMin;
+float deltaFiveMin;
 
 void setup(){
   Serial.begin(115200);
@@ -61,6 +68,16 @@ void setup(){
   pinMode(acVoltagePin, INPUT);
   digitalWrite(buzzerPin, HIGH);
   digitalWrite(relayPin, LOW);
+
+  //arrs
+  for (int i = 0; i < 60; i++) {
+    oneMinArray[i] = 0.0;
+  }
+
+  for (int i = 0; i < 300; i++) {
+    fiveMinArray[i] = 0.0;
+  }
+
   delay(100);
 }
 
@@ -141,10 +158,28 @@ void loop() {
     stopBuzzer();
   }
 
-  //update display
-  bool pumpOn = digitalRead(relayPin) == HIGH;
-  printCurrentTemps(temp, temp2, alarms, pumpOn);
+  //update deltas
+  deltaOneMin = temp - oneMinArray[ctr % 60];
+  deltaFiveMin = temp - fiveMinArray[ctr % 300];
+  oneMinArray[ctr % 60] = temp;
+  fiveMinArray[ctr % 300] = temp;
 
+  bool pumpOn = digitalRead(relayPin) == HIGH;
+
+  //buzz to fill wood
+  if (deltaOneMin < 0.0 && temp <= fillWithWoodTemp && !woodFillAlarmActivated && pumpOn && temp2 > 48.0) {
+    woodFillAlarmActivated = true;
+    startBuzzer();
+    delay(200);
+    stopBuzzer();
+  }
+
+  if (deltaOneMin > 0.0 && woodFillAlarmActivated && pumpOn && temp > fillWithWoodTemp + 1.0) {
+    woodFillAlarmActivated = false;
+  }
+
+  //update display
+  printCurrentTemps(temp, temp2, alarms, pumpOn);
   delay(1000);
   ctr++;
 }
@@ -187,5 +222,10 @@ void printCurrentTemps(float temp1, float temp2, String alarms, bool pumpOn) {
   lcd.print(str1 + " " + str2 + " " + diff + " " + pumpOnStr);
   // set cursor to first column, second row
   lcd.setCursor(0,1);
-  lcd.print(alarms);
+  if (alarms.length() != 0) {
+    lcd.print(alarms);
+    return;
+  }
+  String line = String(deltaOneMin, 2) + " " + String(deltaFiveMin, 2);
+  lcd.print(line);
 }
