@@ -46,8 +46,8 @@ unsigned long lastTempRequestedTime = 0;
 
 // --- PD CONTROLLER PARAMETERS (Global Constants) ---
 const float SETPOINT_TEMP = 57.0;   // Desired wood stove temperature in Celsius
-float Kp = 5.0;              // Proportional Gain (Needs tuning)
-float Kd = 10.0;             // Derivative Gain (Needs tuning)
+float Kp = 2.0;              // Proportional Gain (Needs tuning)
+float Kd = 5.0;             // Derivative Gain (Needs tuning)
 unsigned int loopDelayMilis = 10000; // 10 seconds (Parameterized time step)
 
 // --- SERVO FLAP PARAMETERS (Global Constants) ---
@@ -60,6 +60,12 @@ unsigned long lastTime = 0;      // Timestamp of the last control loop execution
 float currentFlapPercent = 0.0; 
 int currentFlapAngle = FLAP_CLOSED_ANGLE;
 //--------------------------------------------------
+// --- DYNAMIC KD PARAMETERS (NEW) ---
+const float KD_BASE = 5.0;            // Kd used when temp is stable (low response)
+float KD_MAX = 50.0;            // Kd used when temp changes rapidly (aggressive response)
+const float DERIVATIVE_LOW_THRESHOLD = 0.15; // dError/dt below this uses KD_BASE (e.g., 0.05 C/min)
+const float DERIVATIVE_HIGH_THRESHOLD = 0.75; // dError/dt above this uses KD_MAX (e.g., 0.50 C/min)
+
 
 // --- ROLLING MEAN FILTER PARAMETERS ---
 // 6 samples * 10 seconds/sample = 60 seconds (1 minute window)
@@ -125,17 +131,21 @@ void loop() {
     float newTargetPercent = currentFlapPercent + deltaPercent;
     setFlapPercent(newTargetPercent);
   }
+
+  if (lastControlTime > 24 * 60 * 60 * 1000 && rollingMeanTemp < 27.0) {
+     ESP.restart();
+  }
 }
 
 void updatePotentiometerValues() {
   int val = analogRead(potentiometer2Pin);
-  Kp = (val / (float) 4096) * 30.0;
+  Kp = (val / (float) 4096) * 10.0;
 
   int val2 = analogRead(potentiometer3Pin);
-  Kd = (val2 / (float) 4096) * 500.0;
+  Kd = (val2 / (float) 4096) * 50.0;
 
   int val3 = analogRead(potentiometer4Pin);
-  loopDelayMilis = (val3 / (float) 4096) * 30000;
+  KD_MAX = (val3 / (float) 4096) * 100;
 }
 
 void requestTemperatures() {
@@ -160,15 +170,15 @@ void printStatus() {
   String t1 = String(rollingMeanTemp, 1);
   String t2 = String(temp2, 0);
   String kp = String(Kp, 2);
-  String firstLine = t1 + " " + t2 + " " + kp;
+  String firstLine = t1 + " " + t2 + " " + kp + " " + currentFlapAngle;
   lcd.print(firstLine);
 
   // set cursor to first column, second row
   lcd.setCursor(0,1);
 
   String kd = String(Kd, 1);
-  int loopDelayInt = loopDelayMilis / 1000;
-  String secondLine = kd + " " + loopDelayInt + " " + currentFlapAngle;
+  String kdMax = String(KD_MAX, 1);
+  String secondLine = kd + " " + kdMax;
   lcd.print(secondLine);
 }
 
@@ -193,7 +203,7 @@ float computePDOutput(float currentTemp) {
   unsigned long now = millis();
   
   // Calculate delta t in minutes. Using global lastTime.
-  float timeChange = 60.0 / ((float)(now - lastTime) / 1000.0); 
+  float timeChange = (float) (now - lastTime) / 60000.0; 
 
   if (timeChange == 0) {
     return 0.0;
@@ -205,10 +215,36 @@ float computePDOutput(float currentTemp) {
   // 2. Proportional Term (P)
   float P = Kp * error;
 
+
   // 3. Derivative Term (D)
-  // Uses global lastError
   float derivative = (error - lastError) / timeChange;
   float D = Kd * derivative;
+
+  if (digitalRead(button2Pin) == LOW) {
+    // 2. Dynamic Kd Calculation (Gain Scheduling)
+    float dynamicKd;
+    float absDerivative = abs(derivative); // Use absolute rate of change
+
+    if (absDerivative <= DERIVATIVE_LOW_THRESHOLD) {
+      // A. Very low rate of change: Use BASE Kd
+      dynamicKd = Kd;
+    }
+    else if (absDerivative >= DERIVATIVE_HIGH_THRESHOLD) {
+      // B. High rate of change: Use MAX Kd
+      dynamicKd = KD_MAX;
+    }
+    else {
+      // Normalize input between 0 and 1
+      float normalizedInput = (absDerivative - DERIVATIVE_LOW_THRESHOLD) / (DERIVATIVE_HIGH_THRESHOLD - DERIVATIVE_LOW_THRESHOLD);
+
+      // Scale the output
+      dynamicKd = Kd + (KD_MAX - Kd) * normalizedInput;
+
+      // Ensure it's constrained just in case of float math error
+      dynamicKd = constrain(dynamicKd, Kd, KD_MAX);
+    }
+    D = derivative * dynamicKd;
+  }
 
   // 4. Calculate Control Signal (required change in angle)
   float controlSignal = P + D;
