@@ -46,7 +46,7 @@ unsigned long lastTempRequestedTime = 0;
 
 // --- PD CONTROLLER PARAMETERS (Global Constants) ---
 const float SETPOINT_TEMP = 57.0;   // Desired wood stove temperature in Celsius
-float Kp = 2.0;              // Proportional Gain (Needs tuning)
+const float Kp = 2.5;              // Proportional Gain (Needs tuning)
 float Kd = 5.0;             // Derivative Gain (Needs tuning)
 unsigned int loopDelayMilis = 10000; // 10 seconds (Parameterized time step)
 
@@ -63,8 +63,8 @@ int currentFlapAngle = FLAP_CLOSED_ANGLE;
 // --- DYNAMIC KD PARAMETERS (NEW) ---
 const float KD_BASE = 5.0;            // Kd used when temp is stable (low response)
 float KD_MAX = 50.0;            // Kd used when temp changes rapidly (aggressive response)
-const float DERIVATIVE_LOW_THRESHOLD = 0.15; // dError/dt below this uses KD_BASE (e.g., 0.05 C/min)
-const float DERIVATIVE_HIGH_THRESHOLD = 0.75; // dError/dt above this uses KD_MAX (e.g., 0.50 C/min)
+float DERIVATIVE_LOW_THRESHOLD = 0.15; // dError/dt below this uses KD_BASE (e.g., 0.05 C/min)
+float DERIVATIVE_HIGH_THRESHOLD = 0.75; // dError/dt above this uses KD_MAX (e.g., 0.50 C/min)
 
 
 // --- ROLLING MEAN FILTER PARAMETERS ---
@@ -139,7 +139,8 @@ void loop() {
 
 void updatePotentiometerValues() {
   int val = analogRead(potentiometer2Pin);
-  Kp = (val / (float) 4096) * 10.0;
+  DERIVATIVE_LOW_THRESHOLD = (val / (float) 4096);
+  DERIVATIVE_HIGH_THRESHOLD = DERIVATIVE_LOW_THRESHOLD + 1.0;
 
   int val2 = analogRead(potentiometer3Pin);
   Kd = (val2 / (float) 4096) * 50.0;
@@ -169,8 +170,8 @@ void printStatus() {
   lcd.setCursor(0, 0);
   String t1 = String(rollingMeanTemp, 1);
   String t2 = String(temp2, 0);
-  String kp = String(Kp, 2);
-  String firstLine = t1 + " " + t2 + " " + kp + " " + currentFlapAngle;
+  String lowTh = String(DERIVATIVE_LOW_THRESHOLD, 2);
+  String firstLine = t1 + " " + t2 + " " + lowTh + " " + currentFlapAngle;
   lcd.print(firstLine);
 
   // set cursor to first column, second row
