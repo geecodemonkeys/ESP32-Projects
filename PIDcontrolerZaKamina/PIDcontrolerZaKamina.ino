@@ -3,6 +3,7 @@
 #include <DallasTemperature.h>
 #include <LiquidCrystal_I2C.h>
 #include <ESP32Servo.h>
+#include <math.h>
 
 
 // set the LCD number of columns and rows
@@ -46,9 +47,10 @@ unsigned long lastTempRequestedTime = 0;
 
 // --- PD CONTROLLER PARAMETERS (Global Constants) ---
 const float SETPOINT_TEMP = 57.0;   // Desired wood stove temperature in Celsius
-const float Kp = 2.5;              // Proportional Gain (Needs tuning)
+float Kp = 2.5;              // Proportional Gain (Needs tuning)
 float Kd = 5.0;             // Derivative Gain (Needs tuning)
 unsigned int loopDelayMilis = 10000; // 10 seconds (Parameterized time step)
+float P, D, error;
 
 // --- SERVO FLAP PARAMETERS (Global Constants) ---
 const int FLAP_CLOSED_ANGLE = 20;   // Fully closed flap (0 degrees)
@@ -61,10 +63,9 @@ float currentFlapPercent = 0.0;
 int currentFlapAngle = FLAP_CLOSED_ANGLE;
 //--------------------------------------------------
 // --- DYNAMIC KD PARAMETERS (NEW) ---
-const float KD_BASE = 5.0;            // Kd used when temp is stable (low response)
-float KD_MAX = 50.0;            // Kd used when temp changes rapidly (aggressive response)
-float DERIVATIVE_LOW_THRESHOLD = 0.15; // dError/dt below this uses KD_BASE (e.g., 0.05 C/min)
-float DERIVATIVE_HIGH_THRESHOLD = 0.75; // dError/dt above this uses KD_MAX (e.g., 0.50 C/min)
+float KD_MAX = 100.0;            // Kd used when temp changes rapidly (aggressive response)
+float expGain = 0.3636;
+float expBase = 42.25;
 
 
 // --- ROLLING MEAN FILTER PARAMETERS ---
@@ -78,6 +79,7 @@ float rollingMeanTemp;
 //-----------------------------------------------
 
 float temp1, temp2;
+unsigned long ctr = 0;
 
 void setup(){
   Serial.begin(9600);
@@ -104,6 +106,7 @@ void loop() {
   if (millis() - lastTempRequestedTime >= 1000) {
     lastTempRequestedTime = millis();
     requestTemperatures();
+    ctr++;
     printStatus();
   }
 
@@ -139,14 +142,13 @@ void loop() {
 
 void updatePotentiometerValues() {
   int val = analogRead(potentiometer2Pin);
-  DERIVATIVE_LOW_THRESHOLD = (val / (float) 4096);
-  DERIVATIVE_HIGH_THRESHOLD = DERIVATIVE_LOW_THRESHOLD + 1.0;
+  Kp = (val / (float) 4096) * 5.0;
 
   int val2 = analogRead(potentiometer3Pin);
-  Kd = (val2 / (float) 4096) * 50.0;
+  expGain = (val2 / (float) 4096) * 1.0;
 
   int val3 = analogRead(potentiometer4Pin);
-  KD_MAX = (val3 / (float) 4096) * 100;
+  expBase = (val3 / (float) 4096) * 80.0;
 }
 
 void requestTemperatures() {
@@ -170,19 +172,25 @@ void printStatus() {
   lcd.setCursor(0, 0);
   String t1 = String(rollingMeanTemp, 1);
   String t2 = String(temp2, 0);
-  String lowTh = String(DERIVATIVE_LOW_THRESHOLD, 2);
-  String firstLine = t1 + " " + t2 + " " + lowTh + " " + currentFlapAngle;
+  String kp = String(Kp, 2);
+  String firstLine = t1 + " " + t2 + " " + kp + " " + currentFlapAngle;
   lcd.print(firstLine);
 
   // set cursor to first column, second row
   lcd.setCursor(0,1);
-
-  String kd = String(Kd, 1);
-  String kdMax = String(KD_MAX, 1);
-  String secondLine = kd + " " + kdMax;
-  lcd.print(secondLine);
+  if (ctr % 4 < 2) {
+    String expG = String(expGain, 2);
+    String expB = String(expBase, 2);
+    String secondLine = expG + " " + expB;
+    lcd.print(secondLine);
+  } else {
+    String pStr = String(P, 1);
+    String dStr = String(D, 1);
+    String eStr = String(error, 1);
+    String secondLine = "P=" + pStr + " " + dStr + " " + eStr;
+    lcd.print(secondLine);
+  }
 }
-
 
 void setFlapPercent(float targetPercent) {
   float aLittleOpenAngle = 30.0;
@@ -211,39 +219,27 @@ float computePDOutput(float currentTemp) {
   }
 
   // 1. Calculate Error
-  float error = SETPOINT_TEMP - currentTemp;
+  error = SETPOINT_TEMP - currentTemp;
 
   // 2. Proportional Term (P)
-  float P = Kp * error;
+  P = Kp * error;
 
 
   // 3. Derivative Term (D)
   float derivative = (error - lastError) / timeChange;
-  float D = Kd * derivative;
+  D = Kd * derivative;
 
   if (digitalRead(button2Pin) == LOW) {
     // 2. Dynamic Kd Calculation (Gain Scheduling)
     float dynamicKd;
     float absDerivative = abs(derivative); // Use absolute rate of change
 
-    if (absDerivative <= DERIVATIVE_LOW_THRESHOLD) {
-      // A. Very low rate of change: Use BASE Kd
-      dynamicKd = Kd;
-    }
-    else if (absDerivative >= DERIVATIVE_HIGH_THRESHOLD) {
-      // B. High rate of change: Use MAX Kd
-      dynamicKd = KD_MAX;
-    }
-    else {
-      // Normalize input between 0 and 1
-      float normalizedInput = (absDerivative - DERIVATIVE_LOW_THRESHOLD) / (DERIVATIVE_HIGH_THRESHOLD - DERIVATIVE_LOW_THRESHOLD);
+    //y = 0.3636(42.25^x - 1)
+    dynamicKd = expGain * (pow(expBase, absDerivative) - 1.0);
 
-      // Scale the output
-      dynamicKd = Kd + (KD_MAX - Kd) * normalizedInput;
-
-      // Ensure it's constrained just in case of float math error
-      dynamicKd = constrain(dynamicKd, Kd, KD_MAX);
-    }
+    // Ensure it's constrained just in case of float math error
+    dynamicKd = constrain(dynamicKd, 0.0, KD_MAX);
+    
     D = derivative * dynamicKd;
   }
 
