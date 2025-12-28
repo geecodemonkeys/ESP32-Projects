@@ -46,7 +46,7 @@ unsigned long lastTempRequestedTime = 0;
 //--------------------------------------------------
 
 // --- PD CONTROLLER PARAMETERS (Global Constants) ---
-const float SETPOINT_TEMP = 57.0;   // Desired wood stove temperature in Celsius
+float SETPOINT_TEMP = 57.0;   // Desired wood stove temperature in Celsius
 float Kp = 2.5;              // Proportional Gain (Needs tuning)
 float Kd = 5.0;             // Derivative Gain (Needs tuning)
 unsigned int loopDelayMilis = 10000; // 10 seconds (Parameterized time step)
@@ -179,9 +179,10 @@ void printStatus() {
   // set cursor to first column, second row
   lcd.setCursor(0,1);
   if (ctr % 4 < 2) {
+    String setpoint = String(SETPOINT_TEMP, 1);
     String expG = String(expGain, 2);
     String expB = String(expBase, 2);
-    String secondLine = expG + " " + expB;
+    String secondLine = setpoint + " " + expG + " " + expB;
     lcd.print(secondLine);
   } else {
     String pStr = String(P, 1);
@@ -217,6 +218,10 @@ float computePDOutput(float currentTemp) {
   if (timeChange == 0) {
     return 0.0;
   }
+
+  int val = analogRead(potentiometer1Pin);
+  float percent = (float) val / (float) 4096;
+  SETPOINT_TEMP = 55.0 + percent * 10.0; 
 
   // 1. Calculate Error
   error = SETPOINT_TEMP - currentTemp;
